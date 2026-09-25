@@ -1,0 +1,17 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    ascii_chart (0.2.0)
+
+PLATFORMS
+  arm64-darwin-25
+  ruby
+
+DEPENDENCIES
+  ascii_chart (~> 0.2.0)
+
+CHECKSUMS
+  ascii_chart (0.2.0) sha256=2d8eefdbc1ebc39504e4ff319685b2b65ac3271aabb8e2a59e7f911fe8376413
+
+BUNDLED WITH
+  4.0.16
