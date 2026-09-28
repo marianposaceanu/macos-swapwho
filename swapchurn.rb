@@ -19,13 +19,7 @@
 require "optparse"
 require_relative "lib/table"
 require_relative "lib/tui"
-
-begin
-  require "ascii_chart"
-  CHART = true
-rescue LoadError
-  CHART = false
-end
+require_relative "lib/chart"
 
 opts = { interval: 0.5, count: nil, plot: nil }
 parser = OptionParser.new do |o|
@@ -143,30 +137,6 @@ def series_values(history, key)
   history.map { |s| s[key] }
 end
 
-# Always exactly `rows` lines, so the layout below the plot never shifts.
-def chart(values, width:, rows:)
-  lines =
-    if !CHART
-      ["  no plot: gem install ascii_chart"]
-    elsif values.empty?
-      ["  collecting samples..."]
-    else
-      # ascii_chart draws the y-axis label inside the canvas, so the visible
-      # width is the sample count plus the label and the offset.
-      values = values.last([width - 18, 8].max)
-      plot = if values.uniq.one?
-        # A flat series makes the gem raise, and it belongs on the floor of the
-        # plot area rather than wherever a one-line render would put it.
-        "#{format('%8.0f ', values.first)}┼#{'─' * [values.size - 1, 0].max}"
-      else
-        AsciiChart.plot(values.map(&:to_f), height: rows - 2, offset: 2, format: "%8.0f ")
-      end
-      plot.lines(chomp: true).map { |l| "  #{l}" }
-    end
-  lines = lines.first(rows)
-  Array.new(rows - lines.size, "") + lines
-end
-
 def headline(sample, width)
   sw = sample[:swap]
   [
@@ -240,7 +210,7 @@ TUI.run(interval: opts[:interval]) do |screen, action|
     plot_rows = body_rows - head.size - TABLE_BORDERS - 2 - 2 if body_rows - head.size - TABLE_BORDERS - 2 - 2 < plot_rows
     plot = if plot_rows >= MIN_PLOT_ROWS
       ["  #{TUI.fit("#{SERIES[series][:label]}, newest at right", width - 2)}",
-       *chart(series_values(history, SERIES[series][:key]), width: width, rows: plot_rows),
+       *Chart.render(series_values(history, SERIES[series][:key]), width: width, rows: plot_rows),
        ""]
     else
       []

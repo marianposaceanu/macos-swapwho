@@ -16,7 +16,7 @@ prints a plain report with `--once` so you can pipe it.
 | **q** | quit, in any of the three |
 | **r** | refresh now, rather than waiting for the next tick |
 | **+** **-** | slow down or speed up the refresh, from 0.25 s to 5 min |
-| **p** | `swapchurn`: cycle the plotted metric |
+| **p** | `swapchurn`: cycle the plotted metric; `swapwho`: switch chart and ranking between swapped and resident memory |
 | **g** | `swapwho`: group by app, or one row per process |
 | **d**, **u** | `tabreport`: group by site; show titles or URLs |
 
@@ -28,8 +28,8 @@ cd macos-swapwho
 for t in swapwho swapchurn tabreport; do ln -s "$PWD/$t.rb" ~/bin/$t; done
 ```
 
-Plain Ruby otherwise. `swapchurn`'s plot uses the `ascii_chart` gem; without it the rest
-of the view still works:
+Plain Ruby otherwise. The live plots in `swapchurn` and `swapwho` use the `ascii_chart`
+gem; without it the rest of each view still works:
 
 ```sh
 gem install ascii_chart      # or: bundle install
@@ -157,13 +157,27 @@ swapwho   01:35:00   measured in 1.4s
 │  166 MB │   647 MB │  2.8% │    3.4% │     2 │ claude                      │
 ╰─────────┴──────────┴───────┴─────────┴───────┴─────────────────────────────╯
 
-  [q] Quit  [r] Measure now  [g] Per process  [+/-] every 10s
+  [q] Quit  [r] Refresh  [p] swapped  [g] Per process  [+/-] 10s
 ```
 
 Read `%system` as "share of everything the kernel has pushed out of RAM". **g** switches
 between one row per process and one row per app, re-rendering the measurement already in
 hand rather than taking a new one, so it is instant. A fresh pass runs on the timer or on
 **r**, and the title says so while it works.
+
+Press **p** to switch between swapped (the default) and resident memory. The selected
+metric becomes the first column and controls descending order, the `-m` minimum, and
+`%sum`. Resident mode omits `%system`, since the kernel's out-of-RAM total is not a
+resident-memory denominator. Both modes still show the other memory column when space
+allows. `--once` stays table-only and ranked by swapped memory.
+
+The live chart tracks the selected metric's total across examined processes, in MB,
+so you can see whether it grows or falls after closing an app. Each point is one
+completed measurement, newest at right. Both metrics retain their latest 240 measurements;
+switching metrics, grouping, and resizing reuse that history without adding points.
+The window shows as many points as fit. These are examined totals (including shared-page
+double counting), not bytes on disk or paging rates. The plot shrinks or disappears in
+short windows.
 
 ## tabreport
 

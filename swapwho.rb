@@ -16,7 +16,7 @@
 #   swapwho -j 12        more parallel workers (default 8)
 #   sudo swapwho         include other users' and system processes
 #
-# In the live view: q quits, r measures again, g toggles grouping.
+# In the live view: q quits, r measures again, g toggles grouping, p changes metric.
 # Only processes owned by the invoking user can be examined without root.
 
 require "json"
@@ -24,6 +24,7 @@ require "optparse"
 require "tempfile"
 require_relative "lib/table"
 require_relative "lib/tui"
+require_relative "lib/chart"
 
 opts = { rows: 20, group: false, jobs: 8, min_kb: 1024, interval: 10, once: false }
 OptionParser.new do |o|
@@ -38,6 +39,10 @@ end.parse!
 
 PAGE = `sysctl -n hw.pagesize`.to_i
 ME = Process.uid
+METRICS = [
+  { name: "swapped", key: :swapped_kb, label: "out-of-RAM memory" },
+  { name: "resident", key: :resident_kb, label: "resident memory" }
+].freeze
 
 def human(kb)
   return format("%.1f GB", kb / 1024.0 / 1024.0) if kb >= 1024 * 1024
@@ -157,32 +162,39 @@ FOOTNOTE = [
   "         groups of helpers can exceed 100%; single processes are accurate."
 ].freeze
 
-def report(measured, kernel, group:, limit:, min_kb:, width:, footnote: true)
+def report(measured, kernel, group:, limit:, min_kb:, width:, footnote: true, plot: [], metric: METRICS.first)
   rows = group ? grouped(measured) : measured
-  sum_kb = rows.sum { |r| r[:swapped_kb] }
-  shown = rows.select { |r| r[:swapped_kb] >= min_kb }.sort_by { |r| -r[:swapped_kb] }.first(limit)
+  key = metric[:key]
+  swapped = key == :swapped_kb
+  other = swapped ? METRICS.last : METRICS.first
+  sum_kb = rows.sum { |r| r[key] }
+  shown = rows.select { |r| r[key] >= min_kb }.sort_by { |r| -r[key] }.first(limit)
+  headers = [metric[:name], other[:name], "%sum", *(swapped ? ["%system"] : []),
+             group ? "procs" : "pid", "name"]
 
   table = Table.render(
-    ["swapped", "resident", "%sum", "%system", group ? "procs" : "pid", "name"],
+    headers,
     shown.map do |r|
-      [human(r[:swapped_kb]), human(r[:resident_kb]),
-       format("%.1f%%", sum_kb.zero? ? 0 : 100.0 * r[:swapped_kb] / sum_kb),
-       format("%.1f%%", kernel[:out_of_ram_kb].zero? ? 0 : 100.0 * r[:swapped_kb] / kernel[:out_of_ram_kb]),
-       r[:pid].to_s, r[:name]]
+      cells = [human(r[key]), human(r[other[:key]]),
+               format("%.1f%%", sum_kb.zero? ? 0 : 100.0 * r[key] / sum_kb)]
+      if swapped
+        cells << format("%.1f%%", kernel[:out_of_ram_kb].zero? ? 0 : 100.0 * r[key] / kernel[:out_of_ram_kb])
+      end
+      [*cells, r[:pid].to_s, r[:name]]
     end,
-    # Narrow terminals lose %sum first, then resident, then %system: the name
-    # and the swapped size are what the report is for.
-    flex: 5, optional: [2, 1, 3], width: width
+    # Keep the selected metric and owner name when the terminal narrows.
+    flex: headers.size - 1, optional: swapped ? [2, 1, 3] : [2, 1], width: width
   )
 
   head = [
     "  swap file   #{human(kernel[:swap_used_kb])} of #{human(kernel[:swap_total_kb])} used",
     "  compressor  #{human(kernel[:compressor_kb])} of RAM holding #{human(kernel[:out_of_ram_kb])} of pages",
     "  examined    #{measured.size} processes#{ME.zero? ? '' : ' (yours only; sudo for all)'}, " \
-    "holding #{human(sum_kb)} of out-of-RAM pages"
+    "holding #{human(sum_kb)} of #{swapped ? 'out-of-RAM pages' : 'resident memory'}"
   ].map { |l| TUI.fit(l, width) }
 
-  ([*head, "", table] + (footnote ? ["", *FOOTNOTE] : [])).join("\n")
+  notes = swapped ? FOOTNOTE : ["%sum     share of resident memory found across examined processes; shared pages can count multiple times."]
+  ([*head, "", *plot, table] + (footnote ? ["", *notes] : [])).join("\n")
 end
 
 # --- one-shot ---------------------------------------------------------------
@@ -198,14 +210,18 @@ end
 # on r. Toggling the grouping re-renders the measurement already in hand, which
 # is what makes the key feel instant.
 group = opts[:group]
+series = 0
 snapshot = nil
 measuring = false
+history = []
 
 TUI.run(interval: opts[:interval]) do |screen, action|
   group = !group if action == :group
-  screen.keys("g" => :group)
-  screen.footer("  [q] Quit  [r] Measure now  [g] #{group ? 'Per process' : 'Group by app'}" \
-                "  [+/-] every #{screen.interval_label}")
+  series = (series + 1) % METRICS.size if action == :plot
+  metric = METRICS[series]
+  screen.keys("g" => :group, "p" => :plot)
+  screen.footer("  [q] Quit  [r] Refresh  [p] #{metric[:name]}  [g] #{group ? 'Per process' : 'By app'}" \
+                "  [+/-] #{screen.interval_label}")
   screen.frame do |body_rows, width|
     title = if snapshot
       "swapwho   #{snapshot[:at].strftime('%H:%M:%S')}   #{measuring ? 'measuring...' : format('measured in %.1fs', snapshot[:took])}"
@@ -213,9 +229,17 @@ TUI.run(interval: opts[:interval]) do |screen, action|
       "swapwho   measuring..."
     end
     body = if snapshot
-      # title, blank, three header lines, blank, four table borders.
-      report(snapshot[:measured], snapshot[:kernel], group: group, limit: [body_rows - 10, 1].max,
-             min_kb: opts[:min_kb], width: width, footnote: false)
+      # Ten fixed lines, plus a plot label/blank and at least five owner rows.
+      plot_rows = [11, body_rows - 10 - 2 - 5].min
+      plot = if plot_rows >= 4 && width >= 40
+        [TUI.fit("  examined #{metric[:label]}, MB; newest at right", width),
+         *Chart.render(history.map { |s| s[metric[:key]] }, width: width, rows: plot_rows), ""]
+      else
+        []
+      end
+      report(snapshot[:measured], snapshot[:kernel], group: group,
+             limit: [body_rows - 10 - plot.size, 1].max,
+             min_kb: opts[:min_kb], width: width, footnote: false, plot: plot, metric: metric)
     else
       "  reading #{HAVE_FOOTPRINT ? 'footprint' : 'vmmap'} for every process..."
     end
@@ -229,6 +253,9 @@ TUI.run(interval: opts[:interval]) do |screen, action|
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   kernel = kernel_view
   measured = measure(jobs: opts[:jobs])
+  # Record both metrics so switching reuses history without measuring again.
+  history << METRICS.to_h { |m| [m[:key], measured.sum { |r| r[m[:key]] } / 1024.0] }
+  history.shift while history.size > 240
   snapshot = { at: Time.now, kernel: kernel, measured: measured,
                took: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started }
   measuring = false

@@ -2,5 +2,5 @@
 
 source "https://rubygems.org"
 
-# Only swapchurn's live plot needs this, and it degrades to a table without it.
+# The live plots need this; both tools still show tables without it.
 gem "ascii_chart", "~> 0.2.0"
