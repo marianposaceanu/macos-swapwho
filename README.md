@@ -6,7 +6,7 @@ Three small tools for one question: **why is my Mac swapping, and what do I do a
 | --- | --- |
 | `swapchurn` | is swap actually slowing me down right now |
 | `swapwho` | which apps own the memory that is out of RAM |
-| `tabreport` | what my Safari tabs cost, and which ones to close |
+| `tabreport` | what my Safari tabs cost, which tab holds what, and which ones to close |
 
 Each one opens a full-screen view that refreshes itself and resizes with the window, or
 prints a plain report with `--once` so you can pipe it.
@@ -55,8 +55,9 @@ gem install ascii_chart      # or: bundle install
    hurts when pages keep moving between RAM and disk. The verdict column says which.
 2. **`swapwho`** if the verdict is heavy. The top row is the owner. On a laptop with a
    browser open it is almost always the browser's tab helpers.
-3. **`tabreport`** to see every open tab and what the lot costs, then close the ones you
-   are done with, or quit the app that owns the memory. Watch `swapchurn` settle.
+3. **`tabreport`** to see every open tab and what the lot costs, or `tabreport -p` to see
+   what each tab holds, then close the ones you are done with, or quit the app that owns
+   the memory. Watch `swapchurn` settle.
 
 ## What the tools look at
 
@@ -183,9 +184,11 @@ short windows.
 
 ```sh
 tabreport            # live, refreshing every 10 s
+tabreport -p         # match each tab to its helper and rank tabs by memory
 tabreport -d         # group by site
 tabreport -u         # show URLs instead of titles
 tabreport --once     # print one report
+tabreport -p --once  # one ranked report, about 1.3 s per open tab
 ```
 
 ```
@@ -212,10 +215,48 @@ Suggestions
 again on the timer or on **r**.
 
 Each Safari tab runs in its own helper process, and macOS does not say which helper is
-which tab, so `tabreport` deliberately does not touch processes. It measures them as a
-group, shows you the tabs, and points at duplicates, piles from one site, and windows
-holding a single tab. You decide what to close. Quitting and reopening Safari is the
-other safe move: tabs are restored and each one loads only when you click it.
+which tab. Without `-p`, `tabreport` measures the helpers as a group, shows you the tabs,
+and points at duplicates, piles from one site, and windows holding a single tab.
+
+With `-p` it finds out which is which:
+
+```
+tabreport   01:36:02
+
+Safari: 19 tabs in 1 windows, 21 helper processes.
+Helpers hold 4.1 GB in memory, of which 2.6 GB is compressed or on the swap file.
+All 19 tabs matched to a helper.
+
+╭─────────┬──────────┬───────┬──────────────────┬────────────────────────────╮
+│ swapped │ resident │ tab   │ site             │ title                      │
+├─────────┼──────────┼───────┼──────────────────┼────────────────────────────┤
+│  2.3 GB │   2.4 GB │ w1.13 │ metrics.example  │ Production dashboard       │
+│  671 MB │   1.0 GB │ w1.11 │ example.com      │ Example reference guide    │
+│  378 MB │   582 MB │ w1.3  │ example.com      │ Example documentation      │
+│         │          │ w1.4  │ example.com      │ Example documentation      │
+│    0 MB │    12 MB │ w1.2  │ example.org      │ Example project            │
+╰─────────┴──────────┴───────┴──────────────────┴────────────────────────────╯
+
+Suggestions
+  - one tab holds 54% of what the helpers have swapped: Production dashboard  (w1.13)
+  - w1.3, w1.4 share one helper; its memory is listed once
+```
+
+Each tab runs a 1.2 second JavaScript busy loop, one tab at a time, and the helper whose
+CPU time jumps by that much is the one hosting it. The table is then one row per tab,
+heaviest helper first, with that helper's swapped and resident memory. Tabs from one site
+often share a helper; they sit together and the figures appear on the first row only. A
+tab Safari restored but has not loaded yet shows the dozen megabytes of an empty helper,
+which is what reopening Safari buys you. A dash means the tab could not run the loop: the
+start page, a PDF, or a page elsewhere busy enough to confuse the comparison.
+
+Safari has to allow it: turn on **Develop > Allow JavaScript from Apple Events** (the
+Develop menu itself is enabled in Settings > Advanced). The pass takes about 1.3 s per
+open tab and each tab is frozen for its loop, so the live view refreshes every 60 s in
+this mode rather than every 10 s.
+
+Either way you decide what to close. Quitting and reopening Safari is the other safe
+move: tabs are restored and each one loads only when you click it.
 
 ## What does not help
 

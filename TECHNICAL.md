@@ -16,7 +16,7 @@ macOS keeps a process's anonymous memory in one of three places:
 There is no per-process counter for case 3 alone. The only per-process figure the system
 exposes is cases 2 and 3 combined. `footprint --swapped` reports it per memory category
 and `vmmap --summary` as the `SWAPPED` column of its TOTAL row; the two agree to within a
-few percent. `swapwho` and `tabreap` use footprint and fall back to vmmap. The system-wide split between
+few percent. `swapwho` uses footprint and falls back to vmmap; `tabreport` uses footprint. The system-wide split between
 RAM and disk is available from `vm_stat` and `sysctl vm.swapusage`, and `swapwho` prints
 it in its header so the two views can be compared.
 
@@ -70,22 +70,47 @@ call) additionally needs root, so the scripts pass explicit pid lists instead.
 
 Both tools walk every VM region of the target. footprint amortises that across many pids
 per call: a full `swapwho` pass over about 400 processes takes two seconds on an M4 and
-briefly uses every core, and `tabreap` about the same for the browser helpers. The vmmap
-fallback is one process per call and takes 45 to 60 seconds for the same pass. Neither
-tool is meant to run in a loop; `swapchurn` is the one to leave running, and it only
-reads `vm_stat`.
+briefly uses every core, and `tabreport` about the same for the browser helpers. The vmmap
+fallback is one process per call and takes 45 to 60 seconds for the same pass. A
+`tabreport -p` pass adds about 1.3 s per open tab, nearly all of it the busy loop, and
+measures the helpers once at the end. Neither tool is meant to run in a loop; `swapchurn`
+is the one to leave running, and it only reads `vm_stat`.
 
-## Why tabreport does not act on processes
+## How tabreport matches a tab to its helper
 
 Each Safari tab is a `com.apple.WebKit.WebContent` process, and its memory is easy to
 measure. Mapping a process back to a tab is not: LaunchServices names every helper
 "Safari Web Content", the process has no arguments or environment naming its site, its
 open files are shared caches, and Safari's AppleScript dictionary exposes tab titles and
 URLs but no process id. Activity Monitor shows a site name next to each helper through a
-private interface. Without that mapping, killing "the largest idle helper" is killing an
-unknown tab, and an idle tab can still be the one you kept open on purpose. `tabreport`
-therefore reports totals for the helpers as a group and lists the tabs by name, and
-leaves closing to the user.
+private interface. Without `-p`, `tabreport` reports totals for the helpers as a group
+and lists the tabs by name.
+
+With `-p` the mapping is measured. For each tab the tool records the CPU time of every
+helper from `ps`, asks Safari through `do JavaScript` to run a 1.2 second busy loop in
+that tab, and reads the CPU times again. The helper that gained the most wins, provided
+it gained at least half the loop. It is the largest gain rather than the first over a
+threshold, since a page that is busy on its own gains CPU during the window too. A helper
+first seen after the loop counts from zero: Safari starts a fresh helper for a tab it
+restored but has not loaded, and the loop is all that helper has ever done.
+
+Limits worth knowing:
+
+- Safari must have **Develop > Allow JavaScript from Apple Events** turned on. Without it
+  every probe fails and the report says so.
+- Each tab is frozen for the 1.2 s its loop runs, and tabs are probed one at a time, so a
+  pass costs about 1.3 s per open tab. The live view defaults to a 60 s interval in this
+  mode.
+- Several tabs of one site often share a helper. They are listed together and the
+  helper's figures appear once, on the first row, so a column adds up.
+- A tab that cannot run script, such as the start page or a PDF, gets no match and a dash.
+  A page elsewhere pegging a core at the same moment can confuse the comparison; run the
+  pass again.
+- The figures are the helper's, from `footprint`, with the same shared-page caveats as
+  `swapwho`.
+
+Nothing is closed in either mode. Killing a helper reloads the tab at best and loses
+unsaved state at worst, and the tab you kept open on purpose is often the heavy one.
 
 ## Reading swapchurn
 
